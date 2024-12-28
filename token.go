@@ -15,11 +15,18 @@ type contextKey string
 
 var (
 	AuthenticatedUserKey = contextKey("user_id")
+	tokenValidationURL   string
 )
 
+func init() {
+	tokenValidationURL = os.Getenv("TOKEN_VALIDATION_URL")
+	if tokenValidationURL == "" {
+		panic("TOKEN_VALIDATION_URL environment variable must be set")
+	}
+}
+
 func validateToken(tokenstring string) (map[string]interface{}, error) {
-	url := os.Getenv("TOKEN_VALIDATION_URL")
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, tokenValidationURL, nil)
 	if err != nil {
 		return nil, err
 	}
