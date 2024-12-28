@@ -68,12 +68,14 @@ func constructPromptHandler(p *PromptDeclaration) http.HandlerFunc {
 		context, response, err := AnthropicProcessPrompt(r, p)
 		if err != nil {
 			if p.Cost.Cost > 0 {
-				err = creditService.RefundCredits(r.Context(), user)
-				if err != nil {
-					fmt.Printf("Failed to return %d credits to user %s %v\n", p.Cost.Cost, user, err)
+				reterr := creditService.RefundCredits(r.Context(), user)
+				if reterr != nil {
+					fmt.Printf("Failed to return %d credits to user %s %v\n", p.Cost.Cost, user, reterr)
 				}
 			}
+			fmt.Printf("Failed to process anthropic prompt %v\n", err)
 			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		ret, err := MakeResult(context, response)
 		if err != nil {
