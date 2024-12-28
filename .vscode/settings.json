@@ -1,0 +1,6 @@
+{
+    "go.testEnvVars": {
+        "TESTING": "true",
+        "PROMPTS": "{\"test\":{\"service\":\"anthropic\",\"model\":\"claude-3\",\"system\":\"You are a helpful assistant\",\"maxTokens\":1000,\"cost\":{\"path\":\"test/path\",\"cost\":1}}}"
+    }
+}
