@@ -55,10 +55,12 @@ func constructPromptHandler(p *PromptDeclaration) http.HandlerFunc {
 		if p.Cost.Cost > 0 {
 			creditGood, _, err := creditService.SubtractCredits(r.Context(), user)
 			if err != nil {
+				fmt.Printf("Failed to charge %d credits to user %s %v\n", p.Cost.Cost, user, err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			if !creditGood {
+				fmt.Printf("bad credit charge %d credits to user %s\n", p.Cost.Cost, user)
 				w.WriteHeader(http.StatusPaymentRequired)
 				return
 			}
@@ -68,7 +70,7 @@ func constructPromptHandler(p *PromptDeclaration) http.HandlerFunc {
 			if p.Cost.Cost > 0 {
 				err = creditService.RefundCredits(r.Context(), user)
 				if err != nil {
-					fmt.Printf("Failed to return %d credits to user %s\n", p.Cost.Cost, user)
+					fmt.Printf("Failed to return %d credits to user %s %v\n", p.Cost.Cost, user, err)
 				}
 			}
 			w.WriteHeader(http.StatusInternalServerError)
