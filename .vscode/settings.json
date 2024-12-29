@@ -1,6 +1,8 @@
 {
     "go.testEnvVars": {
         "TESTING": "true",
-        "PROMPTS": "{\"test\":{\"service\":\"anthropic\",\"model\":\"claude-3\",\"system\":\"You are a helpful assistant\",\"maxTokens\":1000,\"cost\":{\"path\":\"test/path\",\"cost\":1}}}"
+        "PROMPTS": "{\"test\":{\"service\":\"anthropic\",\"model\":\"claude-3\",\"system\":\"You are a helpful assistant\",\"maxTokens\":1000,\"cost\":{\"path\":\"test/path\",\"cost\":1}}}",
+        "CONTEXT_KEY": "12345678901234567890123456789012",
+        "TOKEN_VALIDATION_URL" : "http://localhost:5000/"
     }
 }

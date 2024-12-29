@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,57 +45,76 @@ func init() {
 	}
 }
 
-func constructPromptHandler(p *PromptDeclaration) http.HandlerFunc {
+func constructPromptHandler(name string, p *PromptDeclaration) http.HandlerFunc {
 	creditService := fcs.NewService(p.Cost, firebaseURL)
 	return func(w http.ResponseWriter, r *http.Request) {
-		user := r.Context().Value(AuthenticatedUserKey).(string)
 		if p.Service != Anthropic {
 			w.WriteHeader(http.StatusNotImplemented)
 			return
 		}
-		if p.Cost.Cost > 0 {
-			creditGood, _, err := creditService.SubtractCredits(r.Context(), user)
-			if err != nil {
-				fmt.Printf("Failed to charge %d credits to user %s %v\n", p.Cost.Cost, user, err)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			if !creditGood {
-				fmt.Printf("bad credit charge %d credits to user %s\n", p.Cost.Cost, user)
-				w.WriteHeader(http.StatusPaymentRequired)
-				return
-			}
-		}
-		context, response, err := AnthropicProcessPrompt(r, p)
-		if err != nil {
-			if p.Cost.Cost > 0 {
-				reterr := creditService.RefundCredits(r.Context(), user)
-				if reterr != nil {
-					fmt.Printf("Failed to return %d credits to user %s %v\n", p.Cost.Cost, user, reterr)
-				}
-			}
-			fmt.Printf("Failed to process anthropic prompt %v\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		ret, err := MakeResult(context, response)
-		if err != nil {
-			fmt.Printf("failed to make result %v\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		jsonResponse, err := json.Marshal(ret)
-		if err != nil {
-			fmt.Printf("failed to marshal response: %v\n", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		vars := CollectVariables(r, p)
+		executor := AnthropicProcessPrompt
+		runFunc(r.Context(), creditService, name, p, vars, executor, w)
+	}
+}
 
-		if _, err := w.Write(jsonResponse); err != nil {
-			fmt.Printf("failed to write response: %v\n", err)
+func runFunc(ctx context.Context, creditService *fcs.Service, name string, p *PromptDeclaration, vars PromptVariables, executor ModelExecutor, w http.ResponseWriter) {
+	user := ctx.Value(AuthenticatedUserKey).(string)
+	if creditService != nil && p.Cost.Cost > 0 {
+		creditGood, _, err := creditService.SubtractCredits(ctx, user)
+		if err != nil {
+			fmt.Printf("Failed to charge %d credits to user %s %v\n", p.Cost.Cost, user, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		if !creditGood {
+			fmt.Printf("bad credit charge %d credits to user %s\n", p.Cost.Cost, user)
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+	}
+	model_context, response, err := executor(p, vars)
+	if err != nil {
+		if creditService != nil && p.Cost.Cost > 0 {
+			reterr := creditService.RefundCredits(ctx, user)
+			if reterr != nil {
+				fmt.Printf("Failed to return %d credits to user %s %v\n", p.Cost.Cost, user, reterr)
+			}
+		}
+		fmt.Printf("Failed to process anthropic prompt %v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	prompt_context := PromptContext{
+		Prompt:       name,
+		ModelContext: model_context,
+	}
+
+	contextJson, err := json.Marshal(prompt_context)
+	if err != nil {
+		fmt.Printf("failed to marshal context %v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ret, err := MakeResult(contextJson, response)
+	if err != nil {
+		fmt.Printf("failed to make result %v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	jsonResponse, err := json.Marshal(ret)
+	if err != nil {
+		fmt.Printf("failed to marshal response: %v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := w.Write(jsonResponse); err != nil {
+		fmt.Printf("failed to write response: %v\n", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -114,12 +134,52 @@ func setupcors() *cors.Cors {
 	}
 }
 
+func continuanceConstructor(name string, p *PromptDeclaration) http.HandlerFunc {
+	creditService := fcs.NewService(p.Cost, firebaseURL)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p.Service != Anthropic {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		vars := CollectContinuanceVariables(r)
+		executor := AnthropicContinuePrompt
+		runFunc(r.Context(), creditService, name, p, vars, executor, w)
+	}
+}
+
+func continuance(w http.ResponseWriter, r *http.Request) {
+	contextJson := r.FormValue("CONTEXT")
+	var promptContext PromptContext
+	if len(contextJson) <= 0 {
+		fmt.Printf("CONTEXT not set\n")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	err := json.Unmarshal([]byte(contextJson), &promptContext)
+	if err != nil {
+		fmt.Printf("could not unpack CONTEXT\n")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	prompt, pok := prompts[promptContext.Prompt]
+	if !pok {
+		fmt.Printf("no prompt %s exists\n", promptContext.Prompt)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	NewTokenMiddleware(continuanceConstructor(promptContext.Prompt, &prompt), prompt.RequiredScope).ServeHTTP(w, r)
+}
+
 func main() {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/v1/continue", continuance)
 	for k, v := range prompts {
 		path := fmt.Sprintf("/v1/prompt/%s", k)
-		mux.HandleFunc(path, NewTokenMiddleware(constructPromptHandler(&v), v.RequiredScope).ServeHTTP)
+		mux.HandleFunc(path, NewTokenMiddleware(constructPromptHandler(k, &v), v.RequiredScope).ServeHTTP)
 	}
 
 	corsobj := setupcors()

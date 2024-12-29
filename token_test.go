@@ -3,7 +3,6 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 )
 
@@ -19,7 +18,7 @@ func TestValidateToken(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	os.Setenv("TOKEN_VALIDATION_URL", mockServer.URL)
+	tokenValidationURL = mockServer.URL
 
 	tests := []struct {
 		name    string
@@ -69,7 +68,7 @@ func TestValidateAndGetClaims(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	os.Setenv("TOKEN_VALIDATION_URL", mockServer.URL)
+	tokenValidationURL = mockServer.URL
 
 	tests := []struct {
 		name       string
@@ -167,7 +166,7 @@ func TestTokenMiddleware(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	os.Setenv("TOKEN_VALIDATION_URL", mockServer.URL)
+	tokenValidationURL = mockServer.URL
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

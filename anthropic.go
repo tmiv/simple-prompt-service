@@ -47,8 +47,6 @@ type anthropicResponse struct {
 	} `json:"error,omitempty"`
 }
 
-type variables map[string]string
-
 func backfillReponse(req *anthropicRequest, resp anthropicResponse) *anthropicRequest {
 	var responseText string
 	for _, content := range resp.Content {
@@ -88,18 +86,12 @@ func collectLatestResponses(req *anthropicRequest) string {
 	return strings.Join(responses, "\n")
 }
 
-func buildRequest(r *http.Request, p *PromptDeclaration) (*anthropicRequest, []byte, error) {
+func buildRequest(p *PromptDeclaration, vars PromptVariables) (*anthropicRequest, []byte, error) {
 	reqBody := anthropicRequest{
 		Model:       p.Model,
 		MaxTokens:   p.MaxTokens,
 		Temperature: p.Temperature,
 		Messages:    []messageParam{},
-	}
-
-	vars := make(variables)
-	for key := range p.Variables {
-		varKey := p.Variables[key]
-		vars[varKey] = r.FormValue(varKey)
 	}
 
 	// Apply variables to system prompt if present
@@ -141,14 +133,35 @@ func buildRequest(r *http.Request, p *PromptDeclaration) (*anthropicRequest, []b
 	return &reqBody, jsonBody, nil
 }
 
-func AnthropicProcessPrompt(r *http.Request, p *PromptDeclaration) ([]byte, string, error) {
-	client := &http.Client{}
+func buildContinueRequest(p *PromptDeclaration, vars PromptVariables) (*anthropicRequest, []byte, error) {
+	var reqBody anthropicRequest
 
-	reqBody, jsonBody, err := buildRequest(r, p)
+	context, ok := vars["CONTEXT"]
+	if !ok {
+		return nil, nil, fmt.Errorf("no CONTEXT")
+	}
+	text, ok := vars["USER_TEXT"]
+	if !ok {
+		return nil, nil, fmt.Errorf("no USER_TEXT")
+	}
+	err := json.Unmarshal([]byte(context), &reqBody)
 	if err != nil {
-		return nil, "", fmt.Errorf("error creating request content: %w", err)
+		return nil, nil, fmt.Errorf("could not unmarshal context: %v", err)
 	}
 
+	reqBody.Messages = append(reqBody.Messages, messageParam{
+		Content: text,
+		Role:    "user",
+	})
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, nil, fmt.Errorf("error marshaling request: %w", err)
+	}
+	return &reqBody, jsonBody, nil
+}
+
+func sendToAntrhopic(reqBody *anthropicRequest, jsonBody []byte) (interface{}, string, error) {
+	client := &http.Client{}
 	req, err := http.NewRequest("POST", anthropicMessageEndpoint, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return nil, "", fmt.Errorf("error creating request: %w", err)
@@ -164,34 +177,42 @@ func AnthropicProcessPrompt(r *http.Request, p *PromptDeclaration) ([]byte, stri
 	}
 	defer resp.Body.Close()
 
-	result, contBytes, err := packageResult(resp, reqBody)
-	if err != nil {
-		return nil, "", err
-	}
-
-	return contBytes, result, nil
+	return packageResult(resp, reqBody)
 }
 
-func packageResult(resp *http.Response, reqBody *anthropicRequest) (string, []byte, error) {
+func AnthropicProcessPrompt(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error) {
+
+	reqBody, jsonBody, err := buildRequest(p, vars)
+	if err != nil {
+		return nil, "", fmt.Errorf("error creating request content: %w", err)
+	}
+	return sendToAntrhopic(reqBody, jsonBody)
+}
+
+func AnthropicContinuePrompt(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error) {
+	reqBody, jsonBody, err := buildContinueRequest(p, vars)
+	if err != nil {
+		return nil, "", fmt.Errorf("error creating request content: %w", err)
+	}
+	return sendToAntrhopic(reqBody, jsonBody)
+}
+
+func packageResult(resp *http.Response, reqBody *anthropicRequest) (interface{}, string, error) {
 	var anthResponse anthropicResponse
 	if err := json.NewDecoder(resp.Body).Decode(&anthResponse); err != nil {
-		return "", nil, fmt.Errorf("error decoding response: %w", err)
+		return nil, "", fmt.Errorf("error decoding response: %w", err)
 	}
 
 	if anthResponse.Error != nil {
-		return "", nil, fmt.Errorf("API error: %s", anthResponse.Error.Message)
+		return nil, "", fmt.Errorf("API error: %s", anthResponse.Error.Message)
 	}
 
 	if len(anthResponse.Content) == 0 {
-		return "", nil, fmt.Errorf("no content in response")
+		return nil, "", fmt.Errorf("no content in response")
 	}
 
 	cont := backfillReponse(reqBody, anthResponse)
 	result := collectLatestResponses(cont)
 
-	contBytes, err := json.Marshal(cont)
-	if err != nil {
-		return "", nil, fmt.Errorf("error encoding response: %w", err)
-	}
-	return result, contBytes, nil
+	return *cont, result, nil
 }

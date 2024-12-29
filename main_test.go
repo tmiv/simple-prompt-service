@@ -87,7 +87,7 @@ func TestConstructPromptHandler(t *testing.T) {
 	}
 
 	// Create the handler
-	handler := constructPromptHandler(&testPrompt)
+	handler := constructPromptHandler("testPrompt", &testPrompt)
 
 	// TODO: Add more specific tests for the handler functionality
 	if handler == nil {

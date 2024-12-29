@@ -3,42 +3,11 @@ package main
 import (
 	"io"
 	"net/http"
-	"net/url"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
-
-func TestBackfillResponse(t *testing.T) {
-	req := anthropicRequest{
-		Model:     "claude-3-opus-20240229",
-		Messages:  []messageParam{},
-		MaxTokens: 1024,
-	}
-
-	resp := anthropicResponse{
-		Content: []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}{
-			{Type: "text", Text: "Hello world"},
-		},
-	}
-
-	result := backfillReponse(&req, resp)
-
-	if len(result.Messages) != 1 {
-		t.Errorf("Expected 1 message, got %d", len(result.Messages))
-	}
-
-	if result.Messages[0].Role != "assistant" {
-		t.Errorf("Expected role 'assistant', got %s", result.Messages[0].Role)
-	}
-
-	if result.Messages[0].Content != "Hello world" {
-		t.Errorf("Expected content 'Hello world', got %s", result.Messages[0].Content)
-	}
-}
 
 func TestCollectLatestResponses(t *testing.T) {
 	tests := []struct {
@@ -47,128 +16,190 @@ func TestCollectLatestResponses(t *testing.T) {
 		want     string
 	}{
 		{
-			name: "multiple assistant responses",
-			messages: []messageParam{
-				{Role: "user", Content: "Hello"},
-				{Role: "assistant", Content: "Hi"},
-				{Role: "assistant", Content: "How are you?"},
-			},
-			want: "Hi\nHow are you?",
-		},
-		{
 			name: "single assistant response",
 			messages: []messageParam{
 				{Role: "user", Content: "Hello"},
-				{Role: "assistant", Content: "Hi"},
+				{Role: "assistant", Content: "Hi there"},
 			},
-			want: "Hi",
+			want: "Hi there",
 		},
 		{
-			name: "no assistant responses",
+			name: "multiple assistant responses",
 			messages: []messageParam{
 				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi there"},
+				{Role: "user", Content: "How are you?"},
+				{Role: "assistant", Content: "I'm good"},
 			},
-			want: "",
+			want: "I'm good",
 		},
 		{
-			name: "mixed responses with user interruption",
+			name: "consecutive assistant responses",
 			messages: []messageParam{
-				{Role: "assistant", Content: "First"},
 				{Role: "user", Content: "Hello"},
-				{Role: "assistant", Content: "Second"},
-				{Role: "assistant", Content: "Third"},
+				{Role: "assistant", Content: "Response 1"},
+				{Role: "assistant", Content: "Response 2"},
 			},
-			want: "Second\nThird",
+			want: "Response 1\nResponse 2",
+		},
+		{
+			name:     "empty messages",
+			messages: []messageParam{},
+			want:     "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := anthropicRequest{
-				Messages: tt.messages,
-			}
-
-			got := collectLatestResponses(&req)
-			if got != tt.want {
-				t.Errorf("collectLatestResponses() = %v, want %v", got, tt.want)
-			}
+			req := &anthropicRequest{Messages: tt.messages}
+			got := collectLatestResponses(req)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
 func TestBuildRequest(t *testing.T) {
-	form := url.Values{}
-	form.Add("name", "Test User")
-	form.Add("topic", "Testing")
-
-	req, _ := http.NewRequest("POST", "/", strings.NewReader(form.Encode()))
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	req.ParseForm()
-
-	systemPrompt := "You are talking to {{name}} about {{topic}}"
-	userPrompt := "Hello {{name}}, let's discuss {{topic}}"
-	agentPrompt := "I'll help {{name}} with {{topic}}"
-
 	tests := []struct {
-		name    string
-		prompt  *PromptDeclaration
-		want    *anthropicRequest
-		wantErr bool
+		name     string
+		prompt   *PromptDeclaration
+		vars     PromptVariables
+		wantErr  bool
+		validate func(*testing.T, *anthropicRequest)
 	}{
 		{
-			name: "full request with all fields",
+			name: "basic request",
 			prompt: &PromptDeclaration{
-				Model:        "claude-3-opus-20240229",
-				MaxTokens:    1024,
-				Temperature:  0.7,
-				System:       &systemPrompt,
-				InitialUser:  &userPrompt,
-				InitialAgent: &agentPrompt,
-				Variables:    []string{"name", "topic"},
-			},
-			want: &anthropicRequest{
-				Model:       "claude-3-opus-20240229",
-				MaxTokens:   1024,
+				Model:       "claude-3-sonnet",
+				MaxTokens:   1000,
 				Temperature: 0.7,
-				System:      stringPtr("You are talking to Test User about Testing"),
-				Messages: []messageParam{
-					{Role: "user", Content: "Hello Test User, let's discuss Testing"},
-					{Role: "assistant", Content: "I'll help Test User with Testing"},
-				},
+				System:      stringPtr("System prompt {{VAR}}"),
+				InitialUser: stringPtr("User message {{VAR}}"),
 			},
-			wantErr: false,
-		},
-		{
-			name: "request without system prompt",
-			prompt: &PromptDeclaration{
-				Model:       "claude-3-opus-20240229",
-				MaxTokens:   1024,
-				Temperature: 0.7,
-				InitialUser: &userPrompt,
-				Variables:   []string{"name", "topic"},
+			vars: PromptVariables{"VAR": "test"},
+			validate: func(t *testing.T, req *anthropicRequest) {
+				assert.Equal(t, "claude-3-sonnet", req.Model)
+				assert.Equal(t, 1000, req.MaxTokens)
+				assert.Equal(t, float32(0.7), req.Temperature)
+				assert.Equal(t, "System prompt test", *req.System)
+				assert.Equal(t, 1, len(req.Messages))
+				assert.Equal(t, "User message test", req.Messages[0].Content)
 			},
-			want: &anthropicRequest{
-				Model:       "claude-3-opus-20240229",
-				MaxTokens:   1024,
-				Temperature: 0.7,
-				Messages: []messageParam{
-					{Role: "user", Content: "Hello Test User, let's discuss Testing"},
-				},
-			},
-			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, _, err := buildRequest(req, tt.prompt)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("buildRequest() error = %v, wantErr %v", err, tt.wantErr)
+			req, _, err := buildRequest(tt.prompt, tt.vars)
+			if tt.wantErr {
+				assert.Error(t, err)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("buildRequest() got = %v, want %v", got, tt.want)
+			assert.NoError(t, err)
+			tt.validate(t, req)
+		})
+	}
+}
+
+func TestBuildContinueRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		context string
+		text    string
+		wantErr bool
+	}{
+		{
+			name: "valid continue request",
+			context: `{
+				"model": "claude-3-sonnet",
+				"messages": [
+					{"role": "user", "content": "Hello"}
+				]
+			}`,
+			text: "How are you?",
+		},
+		{
+			name:    "missing context",
+			context: "",
+			text:    "test",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vars := PromptVariables{
+				"CONTEXT":   tt.context,
+				"USER_TEXT": tt.text,
 			}
+			req, _, err := buildContinueRequest(&PromptDeclaration{}, vars)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.text, req.Messages[len(req.Messages)-1].Content)
+		})
+	}
+}
+
+// Helper function
+func stringPtr(s string) *string {
+	return &s
+}
+func TestBackfillResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  *anthropicRequest
+		response anthropicResponse
+		want     []messageParam
+	}{
+		{
+			name: "basic backfill",
+			request: &anthropicRequest{
+				Messages: []messageParam{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			response: anthropicResponse{
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "text", Text: "Hi there"},
+				},
+			},
+			want: []messageParam{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi there"},
+			},
+		},
+		{
+			name: "multiple content types",
+			request: &anthropicRequest{
+				Messages: []messageParam{
+					{Role: "user", Content: "Hello"},
+				},
+			},
+			response: anthropicResponse{
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "other", Text: "ignored"},
+					{Type: "text", Text: "Hi there"},
+				},
+			},
+			want: []messageParam{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi there"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := backfillReponse(tt.request, tt.response)
+			assert.Equal(t, tt.want, result.Messages)
 		})
 	}
 }
@@ -176,67 +207,52 @@ func TestBuildRequest(t *testing.T) {
 func TestPackageResult(t *testing.T) {
 	tests := []struct {
 		name       string
-		response   *http.Response
-		reqBody    *anthropicRequest
-		wantResult string
+		respBody   string
 		wantErr    bool
+		wantResult string
 	}{
 		{
 			name: "successful response",
-			response: &http.Response{
-				Body: io.NopCloser(strings.NewReader(`{
-					"content": [{"type": "text", "text": "Hello world"}],
-					"role": "assistant",
-					"model": "claude-3-opus-20240229"
-				}`)),
-			},
-			reqBody: &anthropicRequest{
-				Model:    "claude-3-opus-20240229",
-				Messages: []messageParam{},
-			},
-			wantResult: "Hello world",
-			wantErr:    false,
+			respBody: `{
+                "content": [{"type": "text", "text": "Hello!"}],
+                "role": "assistant"
+            }`,
+			wantResult: "Hello!",
 		},
 		{
-			name: "error in response",
-			response: &http.Response{
-				Body: io.NopCloser(strings.NewReader(`{
-					"error": {"message": "Invalid API key"}
-				}`)),
-			},
-			reqBody:    &anthropicRequest{},
-			wantResult: "",
-			wantErr:    true,
+			name: "error response",
+			respBody: `{
+                "error": {"message": "Invalid request"}
+            }`,
+			wantErr: true,
 		},
 		{
 			name: "empty content",
-			response: &http.Response{
-				Body: io.NopCloser(strings.NewReader(`{
-					"content": [],
-					"role": "assistant",
-					"model": "claude-3-opus-20240229"
-				}`)),
-			},
-			reqBody:    &anthropicRequest{},
-			wantResult: "",
-			wantErr:    true,
+			respBody: `{
+                "content": []
+            }`,
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, _, err := packageResult(tt.response, tt.reqBody)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("packageResult() error = %v, wantErr %v", err, tt.wantErr)
+			resp := &http.Response{
+				Body: io.NopCloser(strings.NewReader(tt.respBody)),
+			}
+			reqBody := &anthropicRequest{
+				Messages: []messageParam{
+					{Role: "user", Content: "Hi"},
+				},
+			}
+
+			_, result, err := packageResult(resp, reqBody)
+			if tt.wantErr {
+				assert.Error(t, err)
 				return
 			}
-			if !tt.wantErr && result != tt.wantResult {
-				t.Errorf("packageResult() result = %v, want %v", result, tt.wantResult)
-			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantResult, result)
 		})
 	}
-}
-
-func stringPtr(s string) *string {
-	return &s
 }

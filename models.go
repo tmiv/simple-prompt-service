@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 
 	fcs "github.com/tmiv/firebase-credit-service"
 )
@@ -16,6 +17,9 @@ const (
 	OpenAI    ServiceType = "openai"
 	Gemini    ServiceType = "gemini"
 )
+
+type PromptVariables map[string]string
+type ModelExecutor func(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error)
 
 type PromptDeclaration struct {
 	Service       ServiceType    `json:"service"` // 'anthropic', 'openai', or 'gemini'
@@ -33,6 +37,11 @@ type PromptDeclaration struct {
 type Response struct {
 	Context string `json:"context"`
 	Result  string `json:"result"`
+}
+
+type PromptContext struct {
+	Prompt       string      `json:"prompt"`
+	ModelContext interface{} `json:"model_context"`
 }
 
 type PromptConfig map[string]PromptDeclaration
@@ -127,4 +136,20 @@ func MakeResult(c []byte, r string) (*Response, error) {
 		Context: base64.StdEncoding.EncodeToString(encrypted),
 		Result:  r,
 	}, nil
+}
+
+func CollectVariables(r *http.Request, p *PromptDeclaration) PromptVariables {
+	vars := make(PromptVariables)
+	for key := range p.Variables {
+		varKey := p.Variables[key]
+		vars[varKey] = r.FormValue(varKey)
+	}
+	return vars
+}
+
+func CollectContinuanceVariables(r *http.Request) PromptVariables {
+	vars := make(PromptVariables)
+	vars["USER_TEXT"] = r.FormValue("USER_TEXT")
+	vars["CONTEXT"] = r.FormValue("CONTEXT")
+	return vars
 }
