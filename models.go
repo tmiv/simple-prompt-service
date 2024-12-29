@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -22,16 +23,18 @@ type PromptVariables map[string]string
 type ModelExecutor func(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error)
 
 type PromptDeclaration struct {
-	Service       ServiceType    `json:"service"` // 'anthropic', 'openai', or 'gemini'
-	Model         string         `json:"model"`
-	System        *string        `json:"system,omitempty"`
-	MaxTokens     int            `json:"max_tokens"`
-	Temperature   float32        `json:"temperature"`
-	InitialUser   *string        `json:"initial_user,omitempty"`
-	InitialAgent  *string        `json:"initial_agent,omitempty"`
-	Cost          fcs.ChargeData `json:"cost"`
-	RequiredScope string         `json:"required_scope"`
-	Variables     []string       `json:"variables,omitempty"`
+	Service            ServiceType     `json:"service"` // 'anthropic', 'openai', or 'gemini'
+	Model              string          `json:"model"`
+	System             *string         `json:"system,omitempty"`
+	MaxTokens          int             `json:"max_tokens"`
+	Temperature        float32         `json:"temperature"`
+	InitialUser        *string         `json:"initial_user,omitempty"`
+	InitialAgent       *string         `json:"initial_agent,omitempty"`
+	Cost               fcs.ChargeData  `json:"cost"`
+	ContinueCost       *fcs.ChargeData `json:"continue_cost,omitempty"`
+	RequiredScope      string          `json:"required_scope"`
+	Variables          []string        `json:"variables,omitempty"`
+	InitialCreditGrant int             `json:"initial_credit_grant"`
 }
 
 type Response struct {
@@ -138,6 +141,35 @@ func MakeResult(c []byte, r string) (*Response, error) {
 	}, nil
 }
 
+func UnpackContext(contextb64 string) (string, string, error) {
+	contextCompress, err := base64.StdEncoding.DecodeString(contextb64)
+	if err != nil {
+		return "", "", fmt.Errorf("decoding CONTEXT %v", err)
+	}
+
+	decrypted, err := Decrypt(contextCompress)
+	if err != nil {
+		return "", "", fmt.Errorf("decrypting context: %v", err)
+	}
+
+	zr, err := gzip.NewReader(bytes.NewReader(decrypted))
+	if err != nil {
+		return "", "", fmt.Errorf("creating gzip reader: %v", err)
+	}
+	defer zr.Close()
+
+	var pc PromptContext
+	if err := json.NewDecoder(zr).Decode(&pc); err != nil {
+		return "", "", fmt.Errorf("decoding context JSON: %v", err)
+	}
+
+	context, err := json.Marshal(pc.ModelContext)
+	if err != nil {
+		return "", "", fmt.Errorf("unpacking model context: %v", err)
+	}
+	return pc.Prompt, string(context), nil
+}
+
 func CollectVariables(r *http.Request, p *PromptDeclaration) PromptVariables {
 	vars := make(PromptVariables)
 	for key := range p.Variables {
@@ -147,9 +179,9 @@ func CollectVariables(r *http.Request, p *PromptDeclaration) PromptVariables {
 	return vars
 }
 
-func CollectContinuanceVariables(r *http.Request) PromptVariables {
+func CollectContinuanceVariables(r *http.Request, context string) PromptVariables {
 	vars := make(PromptVariables)
 	vars["USER_TEXT"] = r.FormValue("USER_TEXT")
-	vars["CONTEXT"] = r.FormValue("CONTEXT")
+	vars["CONTEXT"] = context
 	return vars
 }

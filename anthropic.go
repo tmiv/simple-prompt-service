@@ -133,7 +133,7 @@ func buildRequest(p *PromptDeclaration, vars PromptVariables) (*anthropicRequest
 	return &reqBody, jsonBody, nil
 }
 
-func buildContinueRequest(p *PromptDeclaration, vars PromptVariables) (*anthropicRequest, []byte, error) {
+func buildContinueRequest(vars PromptVariables) (*anthropicRequest, []byte, error) {
 	var reqBody anthropicRequest
 
 	context, ok := vars["CONTEXT"]
@@ -181,7 +181,6 @@ func sendToAntrhopic(reqBody *anthropicRequest, jsonBody []byte) (interface{}, s
 }
 
 func AnthropicProcessPrompt(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error) {
-
 	reqBody, jsonBody, err := buildRequest(p, vars)
 	if err != nil {
 		return nil, "", fmt.Errorf("error creating request content: %w", err)
@@ -190,7 +189,7 @@ func AnthropicProcessPrompt(p *PromptDeclaration, vars PromptVariables) (interfa
 }
 
 func AnthropicContinuePrompt(p *PromptDeclaration, vars PromptVariables) (interface{}, string, error) {
-	reqBody, jsonBody, err := buildContinueRequest(p, vars)
+	reqBody, jsonBody, err := buildContinueRequest(vars)
 	if err != nil {
 		return nil, "", fmt.Errorf("error creating request content: %w", err)
 	}

@@ -61,6 +61,18 @@ func constructPromptHandler(name string, p *PromptDeclaration) http.HandlerFunc 
 func runFunc(ctx context.Context, creditService *fcs.Service, name string, p *PromptDeclaration, vars PromptVariables, executor ModelExecutor, w http.ResponseWriter) {
 	user := ctx.Value(AuthenticatedUserKey).(string)
 	if creditService != nil && p.Cost.Cost > 0 {
+		exists, err := creditService.AccountExists(ctx, user)
+		if err != nil {
+			fmt.Printf("account existance check user %s %v\n", user, err)
+		} else if !exists {
+			cred, err := creditService.AddCredits(ctx, user, p.InitialCreditGrant)
+			if err != nil {
+				fmt.Printf("Failed to create user %s account %v\n", user, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			fmt.Printf("account created for user %s granted %d\n", user, cred)
+		}
 		creditGood, _, err := creditService.SubtractCredits(ctx, user)
 		if err != nil {
 			fmt.Printf("Failed to charge %d credits to user %s %v\n", p.Cost.Cost, user, err)
@@ -130,47 +142,51 @@ func setupcors() *cors.Cors {
 		}
 		return cors.New(options)
 	} else {
-		return cors.Default()
+		fmt.Println("Setup Cors Default")
+		return cors.AllowAll()
 	}
 }
 
-func continuanceConstructor(name string, p *PromptDeclaration) http.HandlerFunc {
-	creditService := fcs.NewService(p.Cost, firebaseURL)
+func continuanceConstructor(name string, p *PromptDeclaration, context string) http.HandlerFunc {
+	var creditService *fcs.Service = nil
+	if p.ContinueCost != nil {
+		creditService = fcs.NewService(*p.ContinueCost, firebaseURL)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p.Service != Anthropic {
 			w.WriteHeader(http.StatusNotImplemented)
 			return
 		}
-		vars := CollectContinuanceVariables(r)
+		vars := CollectContinuanceVariables(r, context)
 		executor := AnthropicContinuePrompt
 		runFunc(r.Context(), creditService, name, p, vars, executor, w)
 	}
 }
 
 func continuance(w http.ResponseWriter, r *http.Request) {
-	contextJson := r.FormValue("CONTEXT")
-	var promptContext PromptContext
-	if len(contextJson) <= 0 {
+	contextb64 := r.FormValue("CONTEXT")
+	if len(contextb64) <= 0 {
 		fmt.Printf("CONTEXT not set\n")
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	promptname, context, err := UnpackContext(contextb64)
 
-	err := json.Unmarshal([]byte(contextJson), &promptContext)
 	if err != nil {
-		fmt.Printf("could not unpack CONTEXT\n")
+		fmt.Printf("Error decoding CONTEXT %v\n", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	prompt, pok := prompts[promptContext.Prompt]
+	prompt, pok := prompts[promptname]
 	if !pok {
-		fmt.Printf("no prompt %s exists\n", promptContext.Prompt)
+		fmt.Printf("no prompt %s exists\n", promptname)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	NewTokenMiddleware(continuanceConstructor(promptContext.Prompt, &prompt), prompt.RequiredScope).ServeHTTP(w, r)
+	execution := continuanceConstructor(promptname, &prompt, context)
+	NewTokenMiddleware(execution, prompt.RequiredScope).ServeHTTP(w, r)
 }
 
 func main() {
